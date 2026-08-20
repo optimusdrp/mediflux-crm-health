@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   HeartPulse,
   ShieldCheck,
@@ -25,6 +25,7 @@ import {
   FileCheck,
   PhoneCall,
   Play,
+  FlaskConical,
 } from 'lucide-react';
 import { AuthModal } from '@/components/modals/AuthModal';
 
@@ -37,13 +38,39 @@ export function LandingPage({ onEnterApp }: LandingPageProps) {
   const [activeFaq, setActiveFaq] = useState<number | null>(0);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register_trial'>('login');
+  const [isTestModeActive, setIsTestModeActive] = useState(false);
+
+  const [logoClicks, setLogoClicks] = useState(0);
+  const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleLogoClick = () => {
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+    }
+
+    const nextClicks = logoClicks + 1;
+    setLogoClicks(nextClicks);
+
+    if (nextClicks >= 5) {
+      setIsTestModeActive(true);
+      setAuthModalMode('login');
+      setIsAuthModalOpen(true);
+      setLogoClicks(0);
+    } else {
+      clickTimeoutRef.current = setTimeout(() => {
+        setLogoClicks(0);
+      }, 3000);
+    }
+  };
 
   const openLogin = () => {
+    setIsTestModeActive(false);
     setAuthModalMode('login');
     setIsAuthModalOpen(true);
   };
 
   const openTrialRegister = () => {
+    setIsTestModeActive(false);
     setAuthModalMode('register_trial');
     setIsAuthModalOpen(true);
   };
@@ -182,8 +209,12 @@ export function LandingPage({ onEnterApp }: LandingPageProps) {
       {/* Top Navbar */}
       <header className="sticky top-0 z-40 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-8 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-teal-400 flex items-center justify-center text-white shadow-md shadow-sky-500/20">
+          <div
+            onClick={handleLogoClick}
+            className="flex items-center gap-3 cursor-pointer select-none group transition-transform active:scale-95"
+            title="Clique 5 vezes no logo para abrir o modo de testes"
+          >
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-teal-400 flex items-center justify-center text-white shadow-md shadow-sky-500/20 group-hover:scale-105 group-hover:ring-2 group-hover:ring-sky-400/40 transition-all">
               <HeartPulse className="w-6 h-6" />
             </div>
             <div>
@@ -192,6 +223,12 @@ export function LandingPage({ onEnterApp }: LandingPageProps) {
                 <span className="text-[10px] font-bold text-sky-400 bg-sky-950/90 border border-sky-800/80 px-1.5 py-0.5 rounded tracking-wider">
                   CRM HEALTH
                 </span>
+                {isTestModeActive && (
+                  <span className="text-[9px] font-bold text-amber-300 bg-amber-950/90 border border-amber-600/80 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                    <FlaskConical className="w-2.5 h-2.5" />
+                    TESTES
+                  </span>
+                )}
               </div>
               <span className="text-[11px] text-slate-400 hidden sm:inline">
                 Plataforma de Governança e Inteligência Clínica
@@ -693,7 +730,11 @@ export function LandingPage({ onEnterApp }: LandingPageProps) {
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950 py-8 px-4 sm:px-8 text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
+          <div
+            onClick={handleLogoClick}
+            className="flex items-center gap-2 cursor-pointer select-none hover:text-slate-300 transition-colors"
+            title="Clique 5 vezes para abrir o modo de testes"
+          >
             <HeartPulse className="w-4 h-4 text-sky-400" />
             <span className="font-bold text-slate-300">MediFlux CRM Health</span>
             <span>•</span>
@@ -715,12 +756,16 @@ export function LandingPage({ onEnterApp }: LandingPageProps) {
       </footer>
 
       {/* Auth & Trial Registration Modal */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        initialMode={authModalMode}
-        onClose={() => setIsAuthModalOpen(false)}
-        onSuccess={onEnterApp}
-      />
+      {isAuthModalOpen && (
+        <AuthModal
+          key={`${authModalMode}-${isTestModeActive}`}
+          isOpen={isAuthModalOpen}
+          initialMode={authModalMode}
+          initialTestMode={isTestModeActive}
+          onClose={() => setIsAuthModalOpen(false)}
+          onSuccess={onEnterApp}
+        />
+      )}
     </div>
   );
 }

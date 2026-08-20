@@ -88,28 +88,44 @@ async function generateJsonWithGemini<T>(
  * 1. TRIAGEM CLÍNICA DUAL (Bedrock Principal -> Gemini Reserva com Cascata -> Fallback Heurístico Local)
  */
 export async function routeClinicalTriage(
-  rawMessage: string,
+  rawMessage: string | { messageText?: string; messagesHistory?: string[] },
   patientContext?: { name?: string; birthDate?: string; healthInsurance?: string }
 ): Promise<TriageResult> {
   const startTime = Date.now();
-  const sanitization = sanitizeClinicalPrompt(rawMessage);
+  
+  let mainText = '';
+  let contextHistory = '';
+  if (typeof rawMessage === 'string') {
+    mainText = rawMessage;
+  } else {
+    mainText = rawMessage.messageText || (rawMessage.messagesHistory && rawMessage.messagesHistory.slice(-1)[0]) || '';
+    if (rawMessage.messagesHistory && rawMessage.messagesHistory.length > 0) {
+      contextHistory = `\n--- Histórico Recente da Conversa ---\n${rawMessage.messagesHistory.join('\n')}\n-----------------------------------\n`;
+    }
+  }
+
+  const sanitization = sanitizeClinicalPrompt(mainText);
 
   if (sanitization.injectionDetected && sanitization.threatLevel === 'high') {
     console.warn('[SECURITY] Tentativa de Prompt Injection detectada na triagem clínica:', sanitization.flags);
   }
 
-  const promptText = `Você é um médico especialista em regulação e triagem clínica hospitalar (Protocolo de Manchester).
-Analise com rigor clínico a seguinte mensagem enviada pelo paciente:
-"${sanitization.sanitizedText}"
-${patientContext ? `Dados do paciente: Nome=${patientContext.name || 'Não informado'}, Convênio=${patientContext.healthInsurance || 'Não informado'}` : ''}
+  const promptText = `Você é um médico especialista em regulação clínica e triagem hospitalar baseado no PROTOCOLO DE MANCHESTER.
+Analise com absoluto rigor técnico e clínico a mensagem do paciente e o contexto da conversa:
+${contextHistory}
+Mensagem Atual / Queixa Principal: "${sanitization.sanitizedText}"
+${patientContext ? `Dados do paciente: Nome=${patientContext.name || 'Não informado'}, Convênio=${patientContext.healthInsurance || 'Não informado'}, Nascimento=${patientContext.birthDate || 'Não informado'}` : ''}
 
-Classifique a urgência médica entre:
-- "critica" (Vermelho - Emergência com risco iminente, dor torácica aguda, falta de ar grave, perda de consciência)
-- "alta" (Laranja - Muito urgente, febre muito alta, dor intensa aguda, cólica renal)
-- "media" (Amarelo - Urgente, sintomas moderados, febre baixa, tosse, mal estar)
-- "baixa" (Verde - Pouco urgente, rotina, receitas, exames, dúvidas eletivas)
+Diretrizes de Classificação de Manchester:
+- "critica" (Vermelho - Emergência, SLA 0 min / Imediato): Risco iminente de morte, dor torácica aguda em aperto, dispneia grave, perda de consciência, parada, suspeita de AVC/IAM, hemorragia profusa.
+- "alta" (Laranja - Muito Urgente, SLA 10 min): Dor aguda e intensa (EVA 8-10), febre muito alta (>39°C) persistente, cólica renal severa, vômitos incoercíveis, crise asmática moderada/grave.
+- "media" (Amarelo - Urgente, SLA 60 min): Sintomas moderados, febre baixa, cefaleia moderada, tosse produtiva, dor de garganta, picos de PA sem sintomas graves.
+- "baixa" (Verde - Pouco Urgente / Eletivo, SLA 120 min): Consulta de rotina, check-up preventivo, renovação de receita, pedidos de exames de rotina, dúvidas administrativas.
 
-IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, classifique como "media" ou superior. Nunca subestime sintomas potencialmente graves.`;
+GUARDRAIL CLÍNICO MANDATÓRIO:
+1. Em qualquer dúvida, ambiguidade ou relato incompleto de sintomas, NUNCA classifique como "baixa". Classifique como "media" ou "alta".
+2. Sugira o protocolo clínico hospitalar/ambulatorial exato a ser adotado (ex: "Protocolo de Dor Torácica / SCA", "Protocolo de Síndrome Febril Pediátrica", "Protocolo de Cólica Renal Aguda", etc.).
+3. Identifique sinais de alerta (redFlags) e formule uma mensagem modelo segura e humanizada para o atendente enviar ao paciente.`;
 
   // Tentativa 1: Bedrock (Claude Haiku 4.5)
   try {
@@ -126,7 +142,11 @@ IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, class
       urgency?: string;
       confidence?: number;
       clinicalSignals?: string[];
+      redFlags?: string[];
       recommendedAction?: string;
+      suggestedProtocol?: string;
+      slaMinutes?: number;
+      suggestedAttendantResponse?: string;
       manchesterCategory?: string;
       reasoning?: string;
       requiresHumanReview?: boolean;
@@ -139,7 +159,7 @@ IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, class
         properties: {
           urgency: {
             type: Type.STRING,
-            description: 'Nível de urgência: "critica", "alta", "media", ou "baixa"',
+            description: 'Nível de urgência estrito: "critica", "alta", "media", ou "baixa"',
           },
           confidence: {
             type: Type.NUMBER,
@@ -148,23 +168,40 @@ IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, class
           clinicalSignals: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Sinais ou sintomas clínicos identificados',
+            description: 'Sinais ou sintomas clínicos identificados no relato',
+          },
+          redFlags: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Sinais de alarme clínicos (red flags) que exigem atenção imediata',
           },
           recommendedAction: {
             type: Type.STRING,
-            description: 'Conduta ou encaminhamento recomendado',
+            description: 'Conduta clínica ou operacional imediata para a equipe da clínica',
+          },
+          suggestedProtocol: {
+            type: Type.STRING,
+            description: 'Nome do protocolo clínico sugerido (ex: Protocolo Manchester de Síndrome Coronariana)',
+          },
+          slaMinutes: {
+            type: Type.INTEGER,
+            description: 'Tempo máximo recomendado de espera pelo Protocolo de Manchester (0, 10, 60 ou 120 minutos)',
+          },
+          suggestedAttendantResponse: {
+            type: Type.STRING,
+            description: 'Mensagem humanizada, acolhedora e clinicamente segura sugerida para o atendente responder ao paciente',
           },
           manchesterCategory: {
             type: Type.STRING,
-            description: 'Classificação de Manchester formatada',
+            description: 'Classificação de Manchester formatada com cor e tempo (ex: Vermelho - Emergência 0 min)',
           },
           reasoning: {
             type: Type.STRING,
-            description: 'Justificativa clínica breve',
+            description: 'Justificativa clínica e fisiopatológica da classificação',
           },
           requiresHumanReview: {
             type: Type.BOOLEAN,
-            description: 'Se exige revisão por enfermeiro/médico humano',
+            description: 'Se exige revisão presencial por enfermeiro/médico humano',
           },
         },
         required: [
@@ -172,6 +209,7 @@ IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, class
           'confidence',
           'clinicalSignals',
           'recommendedAction',
+          'suggestedProtocol',
           'manchesterCategory',
           'reasoning',
         ],
@@ -194,12 +232,17 @@ IMPORTANTE: Se houver qualquer dúvida ou ambiguidade quanto à gravidade, class
 
       const result: TriageResult = {
         urgency,
-        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.92,
+        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.94,
         clinicalSignals: Array.isArray(parsed.clinicalSignals) ? parsed.clinicalSignals : ['Sintomas avaliados'],
-        recommendedAction: parsed.recommendedAction || 'Avaliação médica recomendada.',
-        manchesterCategory: parsed.manchesterCategory || (urgency === 'critica' ? 'Vermelho' : urgency === 'alta' ? 'Laranja' : urgency === 'media' ? 'Amarelo' : 'Verde'),
+        redFlags: Array.isArray(parsed.redFlags) ? parsed.redFlags : [],
+        recommendedAction: parsed.recommendedAction || 'Avaliação médica imediata recomendada.',
+        suggestedProtocol: parsed.suggestedProtocol || `Protocolo Manchester: Urgência ${urgency.toUpperCase()}`,
+        slaMinutes: typeof parsed.slaMinutes === 'number' ? parsed.slaMinutes : (urgency === 'critica' ? 0 : urgency === 'alta' ? 10 : urgency === 'media' ? 60 : 120),
+        suggestedAttendantResponse: parsed.suggestedAttendantResponse || 'Olá! Registramos seu relato. Nossa equipe está priorizando o seu atendimento de acordo com a gravidade dos seus sintomas.',
+        manchesterCategory: parsed.manchesterCategory || (urgency === 'critica' ? 'Vermelho (Emergência - 0 min)' : urgency === 'alta' ? 'Laranja (Muito Urgente - 10 min)' : urgency === 'media' ? 'Amarelo (Urgente - 60 min)' : 'Verde (Pouco Urgente - 120 min)'),
         manchesterColor: colorMap[urgency] || 'amarelo',
         requiresHumanReview: parsed.requiresHumanReview ?? (urgency === 'critica' || urgency === 'alta'),
+        guardrailTriggered: urgency === 'critica' || urgency === 'alta',
         providerUsed: 'Google Gemini',
         executionTimeMs: Date.now() - startTime,
         reasoning: parsed.reasoning || `Triagem realizada com inteligência artificial clínica (${geminiResult.modelUsed}).`,

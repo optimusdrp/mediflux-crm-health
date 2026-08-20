@@ -162,10 +162,10 @@ export const apiService = {
   },
 
   // 5. Inteligência Artificial Dual
-  async analyzeMessageTriage(messageText: string, patientId?: string) {
+  async analyzeMessageTriage(messageText: string, patientId?: string, messagesHistory?: string[], forceFallback?: boolean) {
     return authFetch<{ triage: TriageResult; patient?: Patient }>('/api/analyze-message', {
       method: 'POST',
-      body: JSON.stringify({ messageText, patientId }),
+      body: JSON.stringify({ messageText, patientId, messagesHistory, forceFallback }),
     });
   },
 
@@ -302,6 +302,54 @@ export const apiService = {
     return authFetch<{ success: boolean; settings: ClinicSettings }>('/api/settings', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  // 11.1 WhatsApp Web.js (Puppeteer Engine & LocalAuth)
+  async getWhatsAppWebSession() {
+    return authFetch<{
+      session: {
+        clinicId: string;
+        status: 'disconnected' | 'connecting' | 'qr_ready' | 'authenticated' | 'ready' | 'error';
+        qrCode?: string;
+        qrExpiresAt?: number;
+        sessionName: string;
+        batteryLevel?: number;
+        pushname?: string;
+        wid?: string;
+        platform?: string;
+        lastSeen?: string;
+        headless: boolean;
+        authStrategy: 'LocalAuth' | 'RemoteAuth' | 'Legacy';
+        autoRestart: boolean;
+        webhookUrl?: string;
+        messagesSentToday: number;
+        messagesReceivedToday: number;
+        puppeteerConfig: {
+          chromiumPath: string;
+          noSandbox: boolean;
+          disableGpu: boolean;
+        };
+      };
+      library: {
+        name: string;
+        version: string;
+        description: string;
+        engine: string;
+        supportedFeatures: string[];
+      };
+    }>('/api/settings/whatsapp-web-js');
+  },
+
+  async executeWhatsAppWebAction(action: 'start_client' | 'refresh_qr' | 'simulate_scan' | 'disconnect' | 'update_config' | 'test_send' | 'simulate_inbound', config?: any) {
+    return authFetch<{
+      success: boolean;
+      message: string;
+      session: any;
+      details?: any;
+    }>('/api/settings/whatsapp-web-js', {
+      method: 'POST',
+      body: JSON.stringify({ action, config }),
     });
   },
 

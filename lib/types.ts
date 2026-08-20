@@ -275,7 +275,19 @@ export interface ClinicSettings {
     manchesterSoundRule: 'all' | 'vermelho_laranja' | 'only_vermelho';
   };
   channels: {
-    whatsapp: { enabled: boolean; number: string; businessHours: string };
+    whatsapp: {
+      enabled: boolean;
+      number: string;
+      businessHours: string;
+      connectionType?: 'whatsapp-web.js' | 'cloud-api';
+      wppWebConfig?: {
+        sessionName: string;
+        authStrategy: 'LocalAuth' | 'RemoteAuth' | 'Legacy';
+        headless: boolean;
+        autoRestart: boolean;
+        webhookUrl?: string;
+      };
+    };
     telegram: { enabled: boolean; botHandle: string; businessHours: string };
     instagram: { enabled: boolean; profile: string; businessHours: string };
     site: { enabled: boolean; widgetColor: string; businessHours: string };
@@ -288,9 +300,15 @@ export interface TriageResult {
   confidence: number;
   clinicalSignals: string[];
   recommendedAction: string;
+  suggestedProtocol: string;
+  slaMinutes: number;
   manchesterCategory: string;
   manchesterColor?: 'vermelho' | 'laranja' | 'amarelo' | 'verde' | 'azul';
   requiresHumanReview: boolean;
+  guardrailTriggered: boolean;
+  guardrailReason?: string;
+  redFlags?: string[];
+  suggestedAttendantResponse?: string;
   providerUsed: 'Bedrock (Claude Haiku 4.5)' | 'Google Gemini' | 'Fallback Heurístico Local';
   executionTimeMs: number;
   reasoning: string;

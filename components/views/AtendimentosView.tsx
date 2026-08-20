@@ -24,12 +24,17 @@ import {
   Calendar,
   Smile,
   ShieldCheck,
+  ShieldAlert,
   CheckCircle2,
   RefreshCw,
   Plus,
   StickyNote,
   MessageSquare,
   Bot,
+  Clock,
+  Activity,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 interface AtendimentosViewProps {
@@ -54,6 +59,10 @@ export function AtendimentosView({
   const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isLoadingPatients, setIsLoadingPatients] = useState(true);
+  const [triageByPatientId, setTriageByPatientId] = useState<Record<string, TriageResult>>({});
+  const [copiedResponse, setCopiedResponse] = useState(false);
+
+  const activeTriageResult = selectedPatientId ? triageByPatientId[selectedPatientId] || null : null;
 
   // Filters
   const [search, setSearch] = useState('');
@@ -105,7 +114,7 @@ export function AtendimentosView({
     setSelectedPatientId(initialPatientId);
   }
 
-  // Load chat messages when selected patient changes
+  // Load chat messages when selected patient changes & poll periodically for live WhatsApp synchronization
   useEffect(() => {
     if (!selectedPatientId) return;
     let isMounted = true;
@@ -122,10 +131,33 @@ export function AtendimentosView({
     };
 
     loadMessages();
+
+    // Auto-polling a cada 3 segundos para receber mensagens em tempo real
+    const interval = setInterval(loadMessages, 3000);
+
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
   }, [selectedPatientId]);
+
+  // Periodic polling for patient list to detect new WhatsApp incoming conversations
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiService.getPatients({
+          search: search || undefined,
+          specialty: filterSpecialty !== 'all' ? filterSpecialty : undefined,
+          urgency: filterUrgency !== 'all' ? filterUrgency : undefined,
+        });
+        setPatients(res.patients);
+      } catch (err) {
+        // silent background poll
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [search, filterSpecialty, filterUrgency]);
 
   // Scroll to bottom
   useEffect(() => {
@@ -165,14 +197,36 @@ export function AtendimentosView({
   // Trigger AI Clinical Triage for current patient chat context
   const handleRunAITriage = async () => {
     if (!selectedPatient) return;
+    
+    // Extrai todo o contexto recente de mensagens para que a IA analise a conversa completa
+    const messagesHistory = messages
+      .slice(-8)
+      .map((m) =>
+        m.isInternalNote
+          ? `[Nota Interna]: ${m.text}`
+          : `${m.sender === 'patient' ? 'Paciente' : 'Atendente'}: ${m.text}`
+      );
+
     const latestPatientMsg = [...messages]
       .reverse()
       .find((m) => m.sender === 'patient')?.text || selectedPatient.notes || 'Paciente solicita atendimento';
 
     setIsAnalyzingAI(true);
     try {
-      const res = await apiService.analyzeMessageTriage(latestPatientMsg, selectedPatient.id);
-      success('Triagem IA Concluída', `Classificação: ${res.triage.manchesterCategory} (${res.triage.urgency.toUpperCase()})`);
+      const res = await apiService.analyzeMessageTriage(latestPatientMsg, selectedPatient.id, messagesHistory);
+      setTriageByPatientId((prev) => ({ ...prev, [selectedPatient.id]: res.triage }));
+
+      if (res.triage.requiresHumanReview) {
+        warning(
+          'Revisão Humana Obrigatória',
+          res.triage.guardrailReason || 'Guardrail clínico ativado: revise o protocolo antes de finalizar.'
+        );
+      } else {
+        success(
+          'Triagem IA Concluída',
+          `Classificação: ${res.triage.manchesterCategory} (${res.triage.urgency.toUpperCase()})`
+        );
+      }
 
       // Update patient in local state
       if (res.patient) {
@@ -216,7 +270,7 @@ export function AtendimentosView({
         requiresHumanReview: !selectedPatient.requiresHumanReview,
       });
       setPatients((prev) => prev.map((p) => (p.id === res.patient.id ? res.patient : p)));
-      success('Revisão Atualizada', selectedPatient.requiresHumanReview ? 'Caso liberado pelo operador.' : 'Marcado para revisão.');
+      success('Revisão Atualizada', selectedPatient.requiresHumanReview ? 'Protocolo validado e liberado pelo operador.' : 'Marcado para revisão humana.');
     } catch (err: any) {
       error('Erro', err.message);
     }
@@ -239,11 +293,11 @@ export function AtendimentosView({
     }
   };
 
-  const urgencyStyles: Record<UrgencyLevel, { badge: string; border: string; dot: string }> = {
-    critica: { badge: 'bg-red-600 text-white', border: 'border-l-4 border-l-red-600', dot: 'bg-red-500' },
-    alta: { badge: 'bg-orange-500 text-white', border: 'border-l-4 border-l-orange-500', dot: 'bg-orange-500' },
-    media: { badge: 'bg-amber-400 text-slate-950 font-bold', border: 'border-l-4 border-l-amber-400', dot: 'bg-amber-400' },
-    baixa: { badge: 'bg-emerald-500 text-white', border: 'border-l-4 border-l-emerald-500', dot: 'bg-emerald-500' },
+  const urgencyStyles: Record<UrgencyLevel, { badge: string; border: string; dot: string; title: string }> = {
+    critica: { badge: 'bg-red-600 text-white', border: 'border-l-4 border-l-red-600', dot: 'bg-red-500', title: 'Emergência (Vermelho)' },
+    alta: { badge: 'bg-orange-500 text-white', border: 'border-l-4 border-l-orange-500', dot: 'bg-orange-500', title: 'Muito Urgente (Laranja)' },
+    media: { badge: 'bg-amber-400 text-slate-950 font-bold', border: 'border-l-4 border-l-amber-400', dot: 'bg-amber-400', title: 'Urgente (Amarelo)' },
+    baixa: { badge: 'bg-emerald-500 text-white', border: 'border-l-4 border-l-emerald-500', dot: 'bg-emerald-500', title: 'Pouco Urgente (Verde)' },
   };
 
   return (
@@ -371,6 +425,9 @@ export function AtendimentosView({
                     <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 capitalize">
                       {selectedPatient.originChannel}
                     </span>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${urgencyStyles[selectedPatient.urgency]?.badge || 'bg-slate-200 text-slate-700'}`}>
+                      {selectedPatient.urgency}
+                    </span>
                   </div>
                   <div className="text-[11px] text-slate-500 flex items-center gap-2">
                     <span>{selectedPatient.phone}</span>
@@ -381,15 +438,38 @@ export function AtendimentosView({
               </div>
 
               {/* AI Trigger Action */}
-              <button
-                onClick={handleRunAITriage}
-                disabled={isAnalyzingAI}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-purple-600 animate-spin" />
-                {isAnalyzingAI ? 'Analisando Dual IA...' : 'Triagem Manchester IA'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRunAITriage}
+                  disabled={isAnalyzingAI}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs disabled:opacity-50"
+                  id="btn-run-ai-triage"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${isAnalyzingAI ? 'animate-spin' : ''}`} />
+                  {isAnalyzingAI ? 'Classificando Histórico...' : 'Triagem Manchester IA'}
+                </button>
+              </div>
             </div>
+
+            {/* Guardrail Warning Banner (Chat Top) */}
+            {selectedPatient.requiresHumanReview && (
+              <div className="bg-amber-500/10 border-b border-amber-300 px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-amber-950">
+                <div className="flex items-center gap-2 font-medium">
+                  <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    <strong>Guardrail Clínico Obrigatório:</strong>{' '}
+                    {activeTriageResult?.guardrailReason ||
+                      'Caso de Urgência Alta/Crítica ou Fallback Local exige revisão e liberação humana antes da conduta.'}
+                  </span>
+                </div>
+                <button
+                  onClick={handleToggleReview}
+                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[11px] font-bold shrink-0 shadow-2xs transition-colors"
+                >
+                  ✓ Validar e Liberar
+                </button>
+              </div>
+            )}
 
             {/* Chat Messages Stream */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -609,46 +689,144 @@ export function AtendimentosView({
               </div>
             </div>
 
-            {/* AI Insights Block (Dual Router & Manchester) */}
-            <div className="bg-purple-50/70 p-4 rounded-xl border border-purple-200 space-y-2.5">
+            {/* AI Insights & Clinical Triage Protocol */}
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-bold text-xs text-purple-950 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-purple-600" /> Triagem & IA
+                <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-600" /> Triagem & Protocolo Clínico
                 </span>
-                <span className="text-[10px] bg-purple-200 text-purple-900 font-bold px-1.5 py-0.2 rounded">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded shadow-2xs ${urgencyStyles[selectedPatient.urgency]?.badge}`}>
                   {selectedPatient.urgency.toUpperCase()}
                 </span>
               </div>
 
-              <div className="text-xs text-purple-900 leading-relaxed">
-                {selectedPatient.aiSummary || 'Triagem preliminar baseada em queixa principal.'}
+              {/* Protocol & SLA */}
+              <div className="p-2.5 bg-white rounded-lg border border-slate-200 text-xs space-y-1.5">
+                <div className="flex items-center justify-between text-slate-800 font-semibold">
+                  <span className="flex items-center gap-1 text-[11px]">
+                    <Activity className="w-3.5 h-3.5 text-sky-600" />
+                    {activeTriageResult?.suggestedProtocol || 'Protocolo Clínico Manchester'}
+                  </span>
+                  <span className="flex items-center gap-1 text-[10px] text-slate-500 font-mono">
+                    <Clock className="w-3 h-3 text-slate-400" />
+                    SLA: {activeTriageResult?.slaMinutes !== undefined ? `${activeTriageResult.slaMinutes} min` : (selectedPatient.urgency === 'critica' ? '0 min' : selectedPatient.urgency === 'alta' ? '10 min' : selectedPatient.urgency === 'media' ? '60 min' : '120 min')}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-600 leading-relaxed">
+                  {selectedPatient.aiSummary || activeTriageResult?.recommendedAction || 'Triagem automática do histórico de mensagens.'}
+                </div>
               </div>
 
-              {/* Tags */}
+              {/* Guardrails Clínicos Obrigatórios */}
+              {selectedPatient.requiresHumanReview ? (
+                <div className="p-3 bg-amber-50 rounded-lg border border-amber-300 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h6 className="font-bold text-[11px] text-amber-950">Guardrail Clínico Ativo</h6>
+                      <p className="text-[10px] text-amber-800 leading-relaxed mt-0.5">
+                        {activeTriageResult?.guardrailReason ||
+                          'Casos de Urgência Alta/Crítica ou respostas provindas de Fallback Heurístico Local exigem validação prévia por profissional humano.'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleToggleReview}
+                    className="w-full py-1.5 px-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[11px] font-bold transition-colors shadow-2xs flex items-center justify-center gap-1"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Validar e Liberar Conduta Humana
+                  </button>
+                </div>
+              ) : (
+                <div className="p-2.5 bg-emerald-50 rounded-lg border border-emerald-200 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-800 font-medium">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span>Revisão Humana Validada</span>
+                  </div>
+                  <button
+                    onClick={handleToggleReview}
+                    className="text-[10px] text-slate-500 hover:text-slate-800 underline"
+                  >
+                    Marcar revisão
+                  </button>
+                </div>
+              )}
+
+              {/* Red Flags & Sinais de Alarme */}
+              {activeTriageResult?.redFlags && activeTriageResult.redFlags.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-rose-700 uppercase tracking-wide flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-rose-600" /> Sinais de Alarme (Red Flags)
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {activeTriageResult.redFlags.map((rf, idx) => (
+                      <span key={idx} className="text-[10px] bg-rose-100 text-rose-900 font-semibold px-2 py-0.5 rounded">
+                        ⚠️ {rf}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sinais Clínicos Identificados */}
+              {activeTriageResult?.clinicalSignals && activeTriageResult.clinicalSignals.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    Sinais Clínicos Detectados
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {activeTriageResult.clinicalSignals.map((sig, idx) => (
+                      <span key={idx} className="text-[10px] bg-slate-200/80 text-slate-800 font-medium px-2 py-0.5 rounded">
+                        {sig}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sugestão de Resposta ao Paciente */}
+              {(activeTriageResult?.suggestedAttendantResponse || activeTriageResult?.recommendedAction) && (
+                <div className="p-2.5 bg-purple-50/80 rounded-lg border border-purple-200 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-purple-950">
+                    <span>Sugestão de Resposta:</span>
+                    <button
+                      onClick={() => {
+                        const reply = activeTriageResult?.suggestedAttendantResponse || activeTriageResult?.recommendedAction || '';
+                        setInputText(reply);
+                        setCopiedResponse(true);
+                        setTimeout(() => setCopiedResponse(false), 2000);
+                      }}
+                      className="flex items-center gap-1 text-[10px] text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 px-2 py-0.5 rounded font-semibold transition-colors"
+                    >
+                      {copiedResponse ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                      {copiedResponse ? 'Inserido!' : 'Inserir no Chat'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-purple-900 leading-relaxed italic bg-white/70 p-2 rounded border border-purple-100">
+                    &ldquo;{activeTriageResult?.suggestedAttendantResponse || activeTriageResult?.recommendedAction}&rdquo;
+                  </p>
+                </div>
+              )}
+
+              {/* Tags do Paciente */}
               <div className="flex flex-wrap gap-1 pt-1">
                 {selectedPatient.tags.map((t, idx) => (
                   <span
                     key={idx}
-                    className="text-[10px] font-semibold bg-purple-100 text-purple-800 px-2 py-0.5 rounded-md"
+                    className="text-[10px] font-semibold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md border border-slate-200"
                   >
                     {t}
                   </span>
                 ))}
               </div>
 
-              {/* Human Review Guardrail Button */}
-              <div className="pt-2 border-t border-purple-200">
-                <button
-                  onClick={handleToggleReview}
-                  className={`w-full py-1.5 px-3 rounded-lg text-xs font-bold transition-colors ${
-                    selectedPatient.requiresHumanReview
-                      ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                  }`}
-                >
-                  {selectedPatient.requiresHumanReview ? '✓ Aprovar Revisão Humana' : 'Revisão Concluída'}
-                </button>
-              </div>
+              {/* Metadados Técnicos de Auditoria */}
+              {activeTriageResult && (
+                <div className="text-[9px] text-slate-400 font-mono pt-1 border-t border-slate-200 flex items-center justify-between">
+                  <span>{activeTriageResult.providerUsed}</span>
+                  <span>{activeTriageResult.executionTimeMs}ms • {(activeTriageResult.confidence * 100).toFixed(0)}% conf.</span>
+                </div>
+              )}
             </div>
 
             {/* Delete Patient (Sensitive Action) */}

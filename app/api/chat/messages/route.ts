@@ -67,6 +67,22 @@ export async function POST(req: NextRequest) {
     db.chatMessages.push(newMessage);
     patient.lastInteractionAt = newMessage.timestamp;
 
+    // Se for mensagem externa para o paciente via WhatsApp, auditar LGPD
+    if (!isInternalNote) {
+      db.auditLogs.unshift({
+        id: `aud_${Date.now()}`,
+        clinicId: auth.user.clinicId,
+        action: 'CHAT_MESSAGE_SENT',
+        target: `Paciente: ${patient.name} (${patient.phone}) via ${newMessage.channel}`,
+        authorEmail: auth.user.email,
+        authorRole: auth.user.role,
+        ip: req.headers.get('x-forwarded-for') || '127.0.0.1',
+        timestamp: new Date().toISOString(),
+        details: { patientId, textPreview: text.substring(0, 40) },
+        lgpdCategory: 'consentimento',
+      });
+    }
+
     return NextResponse.json({ message: newMessage });
   } catch (err) {
     console.error('Erro ao enviar mensagem:', err);

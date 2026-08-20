@@ -25,10 +25,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { messageText, patientId } = await req.json();
+    const { messageText, messagesHistory, patientId, forceFallback } = await req.json();
 
-    if (!messageText) {
-      return NextResponse.json({ error: 'messageText é obrigatório.' }, { status: 400 });
+    if (!messageText && (!messagesHistory || messagesHistory.length === 0)) {
+      return NextResponse.json({ error: 'messageText ou messagesHistory é obrigatório.' }, { status: 400 });
     }
 
     const db = getDatabase();
@@ -47,7 +47,19 @@ export async function POST(req: NextRequest) {
     }
 
     // Executa roteamento de triagem dual (Bedrock -> Gemini -> Heurística) com guardrails
-    const triageResult = await routeClinicalTriage(messageText, patientContext);
+    const triagePayload = messagesHistory && messagesHistory.length > 0
+      ? { messageText: messageText || '', messagesHistory }
+      : (messageText || '');
+
+    let triageResult;
+    if (forceFallback) {
+      // Teste específico de simulação de contingência / fallback local
+      const { executeLocalHeuristicTriage, applyClinicalGuardrails } = await import('@/lib/clinical/triageGuardrails');
+      const rawFallback = executeLocalHeuristicTriage(typeof triagePayload === 'string' ? triagePayload : (triagePayload.messageText || ''), Date.now());
+      triageResult = applyClinicalGuardrails(rawFallback);
+    } else {
+      triageResult = await routeClinicalTriage(triagePayload, patientContext);
+    }
 
     // Incrementa contagem de chamadas de IA na subscrição
     const sub = db.getSubscription(clinicId);
@@ -57,7 +69,7 @@ export async function POST(req: NextRequest) {
     if (patient) {
       patient.urgency = triageResult.urgency;
       patient.requiresHumanReview = triageResult.requiresHumanReview;
-      patient.aiSummary = `${triageResult.manchesterCategory}: ${triageResult.recommendedAction}`;
+      patient.aiSummary = `${triageResult.suggestedProtocol || triageResult.manchesterCategory}: ${triageResult.recommendedAction}`;
       if (!patient.tags.includes(`#${triageResult.urgency.toUpperCase()}`)) {
         patient.tags.push(`#${triageResult.urgency.toUpperCase()}`);
       }
